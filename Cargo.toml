@@ -1,0 +1,12 @@
+[package]
+name = "cura"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/itmo/cura"
+description = "arc-lock-system that should clean up the code a lot"
+license = "MIT"
+readme = "README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
