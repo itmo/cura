@@ -1,7 +1,9 @@
 use std::ops::{Deref,DerefMut};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize,AtomicI32};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
+use std::cell::UnsafeCell;
+const LOCKED:i32=-999;
 /**
  *  a sort of an Arc that will both readwrite lock , be easy to
  *  handle and is cloneable and assignable.
@@ -16,7 +18,7 @@ pub struct Cura<T: Sync + Send> {
 }
 struct CuraData<T: Sync + Send> {
     count: AtomicUsize,
-    data: T,
+    data: UnsafeCell<T>,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
 }
 impl<T: Sync + Send> Cura<T> {
@@ -24,7 +26,7 @@ impl<T: Sync + Send> Cura<T> {
         Cura {
             ptr: NonNull::from(Box::leak(Box::new(CuraData {
                 count: AtomicUsize::new(1),
-                data: t,
+                data: UnsafeCell::new(t),
                 lockcount:AtomicI32::new(0),
             }))),
         }
@@ -32,31 +34,82 @@ impl<T: Sync + Send> Cura<T> {
     fn data(&self) -> &CuraData<T> {
         unsafe { self.ptr.as_ref() }
     }
+    fn unwritelock(&self)
+    {
+        let lock=self.data().lockcount.compare_exchange(
+                                    LOCKED,0,SeqCst,SeqCst);
+        match lock {
+            Ok(LOCKED) =>{}, //ok
+            Ok(x)=>panic!("was supposed to be locked but was {}",x),
+            Err(x)=>panic!("was supposed to be locked but was {}",x),
+        }
+        //TBD here , wake up the next thread from queue
+    }
+    fn unreadlock(&self)
+    {
+        let lock=self.data().lockcount.fetch_sub(1,SeqCst);
+        if lock<1
+        {
+            panic!("was supposed to be readlocked but was {}",1);
+        }
+        //TBD here , wake up the next thread from queue
+    }
     //std::hint::spin_loop();
     //thread::park()
     pub fn read(&self)->ReadGuard<T>
     {
-        //check that there are no writelocks and then 
-        //return a new readlock
-        //spinlock a few times , then enter queue and park on a condvar
-        //fetch_update lockvalue to +1 , unless it is negative in which
-        //  case fail 
-        todo!("do this stuff");
+        //TBD think through these memory orderings
+        loop{
+            let lock=self.data().lockcount.fetch_update(
+                                        SeqCst,
+                                        SeqCst,
+                                        |x|{
+                                            if x>=0{
+                                                Some(x+1)
+                                            }else{
+                                                None
+                                            }
+                                        });
+            match lock {
+                Err(_)=>{/*   its probably writelocked,so we will spin*/
+                    std::hint::spin_loop();
+                },
+                Ok(_x)=>{/*    x readers,including us*/
+                    break;
+                },
+            }
+            //TBD consider deadlock detection  and
+            //    queue/park instead of spin
+        }
         ReadGuard{
             cura:self,
         }
     }
     pub fn write(&self)->Guard<T>
     {
-        //check that there are no readlocks or writelocks and 
-        //return a writelock 
-        //implement this by swapping a "0" to "-999" and checking that
-        //it indeed was  "0"
-        //self.locked.compare_exchange_weak(
-          //  false, true, Acquire, Relaxed).is_err()
-        //if getting writelock fails, insert into queue
-        //spinlock a few times, then go to queue
-        todo!("do this stuff");
+        //TBD think through these memory orderings
+        loop{
+            let lock=self.data().lockcount.fetch_update(
+                                        SeqCst,
+                                        SeqCst,
+                                        |x|{
+                                            if x!=0{
+                                                Some(LOCKED)
+                                            }else{
+                                                None
+                                            }
+                                        });
+            match lock {
+                Err(_)=>{/*   its write/readlocked,so we will spin*/
+                    std::hint::spin_loop();
+                },
+                Ok(_x)=>{/*    should be just us , writing*/
+                    break;
+                },
+            }
+            //TBD consider deadlock detection  and
+            //    queue/park instead of spin
+        }
         Guard{
             cura:self,
         }
@@ -73,7 +126,8 @@ unsafe impl<T: Send + Sync> Sync for Cura<T> {}
  *  deref to make use simpler, this should also transparently
  *  read-lock
  */
- /*TBD
+//TBD  feed this to chatgpt
+/*
 impl<T:Sync+Send> Deref for Cura<T>
 {
     type Target = ReadGuard<T>;
@@ -111,6 +165,8 @@ impl<T: Sync + Send> Drop for Cura<T> {
 /**
  *  writeguard for Cura
  */
+#[must_use = "if unused the Lock will immediately unlock"]
+#[clippy::has_significant_drop]
 pub struct Guard<'a,T:Send+Sync>
 {
     cura:&'a Cura<T>,
@@ -118,23 +174,22 @@ pub struct Guard<'a,T:Send+Sync>
 impl<T:Send+Sync> Drop for Guard<'_,T>
 {
     fn drop(&mut self) {
-        todo!("unlock guard on Cura and signal waiting threads");
-/*        if self.data().count.fetch_sub(1, Release) == 1 {
-            unsafe {
-                drop(Box::from_raw(self.ptr.as_ptr()));
-            }
-        }*/
+        self.cura.unwritelock(); //TBD no need to do anything else?
     }
 }
 impl<T: Sync + Send> Deref for Guard<'_,T> {
     type Target = T;
-    fn deref(&self) -> &T {
-        todo!("this should return a reference to data");
+    fn deref(&self) -> &T { //TBD reference lifetime?
+        unsafe{
+            &*self.cura.data().data.get()
+        }
     }
 }
 impl<T: Sync + Send> DerefMut for Guard<'_,T> {
-    fn deref_mut(&mut self) -> &mut T {
-        todo!("this should return a mutable reference to data");
+    fn deref_mut(&mut self) -> &mut T { //TBD reference lifetime?
+        unsafe {
+            &mut *self.cura.data().data.get()
+        }
     }
 }
 
@@ -142,6 +197,8 @@ impl<T: Sync + Send> DerefMut for Guard<'_,T> {
 /**
  *  readguard for Cura
  */
+#[must_use = "if unused the Lock will immediately unlock"]
+#[clippy::has_significant_drop]
 pub struct ReadGuard<'a,T:Send+Sync>
 {
     cura:&'a Cura<T>,
@@ -149,19 +206,15 @@ pub struct ReadGuard<'a,T:Send+Sync>
 impl<T:Send+Sync> Drop for ReadGuard<'_,T>
 {
     fn drop(&mut self) {
-        todo!("unlock readguard on Cura and signal waiting threads");
-    /*
-        if self.data().count.fetch_sub(1, Release) == 1 {
-            unsafe {
-                drop(Box::from_raw(self.ptr.as_ptr()));
-            }
-        }*/
+        self.cura.unreadlock(); //TBD nothing else?
     }
 }
 impl<T: Sync + Send> Deref for ReadGuard<'_,T> {
     type Target = T;
     fn deref(&self) -> &T {
-        todo!("this should return a reference to data");
+        unsafe{
+            &*self.cura.data().data.get()
+        }
     }
 }
 
@@ -191,6 +244,7 @@ mod tests {
         y.read().testing(); //TBD convert this to work with deref
         assert_eq!(1, NUM_HITS.load(Acquire));
     }
+
     #[test]
     fn it_works() {
         static DROPS: AtomicUsize = AtomicUsize::new(0);
