@@ -1,18 +1,21 @@
+#![warn(missing_docs)]
 use std::ops::{Deref,DerefMut};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize,AtomicI32};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
 const LOCKED:i32=-999;
-/**
- *  a sort of an Arc that will both readwrite lock , be easy to
- *  handle and is cloneable and assignable.
- * ```
- *  assert_eq!(0,0);
- * ```
- *
- *
- */
+const FREE:i32=0;
+///
+/// a sort of an Arc that will both readwrite lock , be easy to
+/// handle and is cloneable and assignable.
+/// ```
+///
+/// assert_eq!(0,0);
+/// ```
+///
+///
+///
 pub struct Cura<T: Sync + Send> {
     ptr: NonNull<CuraData<T>>,
 }
@@ -37,13 +40,13 @@ impl<T: Sync + Send> Cura<T> {
     fn unwritelock(&self)
     {
         let lock=self.data().lockcount.compare_exchange(
-                                    LOCKED,0,SeqCst,SeqCst);
+                                    LOCKED,FREE,SeqCst,SeqCst);
         match lock {
             Ok(LOCKED) =>{}, //ok
             Ok(x)=>panic!("was supposed to be locked but was {}",x),
             Err(x)=>panic!("was supposed to be locked but was {}",x),
         }
-        //TBD here , wake up the next thread from queue
+        //TBD here , wake up the next thread from queue thread.unpark()
     }
     fn unreadlock(&self)
     {
@@ -54,8 +57,6 @@ impl<T: Sync + Send> Cura<T> {
         }
         //TBD here , wake up the next thread from queue
     }
-    //std::hint::spin_loop();
-    //thread::park()
     pub fn read(&self)->ReadGuard<T>
     {
         //TBD think through these memory orderings
@@ -80,6 +81,7 @@ impl<T: Sync + Send> Cura<T> {
             }
             //TBD consider deadlock detection  and
             //    queue/park instead of spin
+            // thread::park();
         }
         ReadGuard{
             cura:self,
@@ -93,7 +95,7 @@ impl<T: Sync + Send> Cura<T> {
                                         SeqCst,
                                         SeqCst,
                                         |x|{
-                                            if x!=0{
+                                            if x==FREE{
                                                 Some(LOCKED)
                                             }else{
                                                 None
@@ -162,9 +164,9 @@ impl<T: Sync + Send> Drop for Cura<T> {
 /**********************************************************
  *  guards
  */
-/**
- *  writeguard for Cura
- */
+///
+/// writeguard for Cura
+///
 #[must_use = "if unused the Lock will immediately unlock"]
 #[clippy::has_significant_drop]
 pub struct Guard<'a,T:Send+Sync>
@@ -226,23 +228,35 @@ mod tests {
 
         /*  calculator for hits to "testing"*/
         static NUM_HITS: AtomicUsize = AtomicUsize::new(0);
-
         /*  testing struct to act as the value*/
-        struct Foo {}
+        struct Foo {
+            id:u16,
+        }
         impl Foo {
-            pub fn new() -> Foo {
-                Foo {}
+            pub fn new(id:u16) -> Foo {
+                Foo {
+                    id:id,
+                }
             }
             pub fn testing(&self) {
-                println!("works");
-                NUM_HITS.fetch_add(1, Relaxed);
+                println!("works {}",self.id);
+                NUM_HITS.fetch_add(self.id.into(), SeqCst);
             }
         }
         /*  create ref and hit the test method*/
-        let x = Cura::new(Foo::new());
+        let x = Cura::new(Foo::new(1));
         let y = x.clone();
+        {
+            x.read().testing();
+        }
+        /*  take a writelock just for fun*/
+        {
+            let mut w=x.write();
+            *w=Foo::new(10);
+            w.testing();
+        }
         y.read().testing(); //TBD convert this to work with deref
-        assert_eq!(1, NUM_HITS.load(Acquire));
+        assert_eq!(21, NUM_HITS.load(Acquire));
     }
 
     #[test]
