@@ -25,6 +25,13 @@ struct CuraData<T: Sync + Send> {
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
 }
 impl<T: Sync + Send> Cura<T> {
+    ///
+    /// constructor for a Cura 
+    /// ```
+    ///     use cura::Cura;
+    ///     let t=1;
+    ///     let foo=Cura::new(t); //instead of Arc::new(Mutex::new(t));
+    /// ```
     pub fn new(t: T) -> Cura<T> {
         Cura {
             ptr: NonNull::from(Box::leak(Box::new(CuraData {
@@ -57,6 +64,10 @@ impl<T: Sync + Send> Cura<T> {
         }
         //TBD here , wake up the next thread from queue
     }
+    ///
+    /// readlock a 'Cura',returning a guard that can be
+    /// dereferenced for read-only operations
+    ///
     pub fn read(&self)->ReadGuard<T>
     {
         //TBD think through these memory orderings
@@ -87,6 +98,10 @@ impl<T: Sync + Send> Cura<T> {
             cura:self,
         }
     }
+    ///
+    /// writelock a 'Cura' , returning a guard that can be
+    /// dereferenced for write-operations.
+    ///
     pub fn write(&self)->Guard<T>
     {
         //TBD think through these memory orderings
