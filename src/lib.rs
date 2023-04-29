@@ -1,11 +1,13 @@
 #![warn(missing_docs)]
 use std::ops::{Deref,DerefMut};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize,AtomicI32};
+use std::sync::atomic::{AtomicUsize,AtomicI32,AtomicU32};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
+use std::thread::Thread;
 const LOCKED:i32=-999;
 const FREE:i32=0;
+const LOCKQUEUE:u32=u32::MAX/2;
 ///
 /// a sort of an Arc that will both readwrite lock , be easy to
 /// handle and is cloneable and assignable.
@@ -23,6 +25,38 @@ struct CuraData<T: Sync + Send> {
     count: AtomicUsize,
     data: UnsafeCell<T>,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
+    queuecount:AtomicU32, // number of threads,
+    queuedata:UnsafeCell<QueueData>,
+}
+struct QueueData
+{
+    queue:*mut QueueLink,
+    endqueue:*mut QueueLink,
+}
+enum LockType
+{
+    Read,
+    Write,
+}
+struct QueueLink
+{
+    thread:Thread,
+    lock:LockType,
+    next:*mut QueueLink,
+}
+impl QueueLink
+{
+    fn new(l:LockType)->QueueLink
+    {
+        QueueLink{
+            thread:std::thread::current(),
+            lock:l,
+            next:std::ptr::null_mut(),
+        }
+    }
+    /*
+        useful methods
+    */
 }
 impl<T: Sync + Send> Cura<T> {
     ///
@@ -33,17 +67,167 @@ impl<T: Sync + Send> Cura<T> {
     ///     let foo=Cura::new(t); //instead of Arc::new(Mutex::new(t));
     /// ```
     pub fn new(t: T) -> Cura<T> {
+        let queuedata=UnsafeCell::new(QueueData{
+                queue:std::ptr::null_mut(),
+                endqueue:std::ptr::null_mut(),
+            });
         Cura {
             ptr: NonNull::from(Box::leak(Box::new(CuraData {
                 count: AtomicUsize::new(1),
                 data: UnsafeCell::new(t),
                 lockcount:AtomicI32::new(0),
+                queuecount:AtomicU32::new(0), //
+                queuedata:queuedata,
             }))),
         }
     }
     fn data(&self) -> &CuraData<T> {
         unsafe { self.ptr.as_ref() }
     }
+    fn get_queuedata(&self) -> *mut QueueData
+    {
+        self.data().queuedata.get()
+    }
+    ///
+    /// compare queue count to LOCḰQUEUE to see if it is already
+    /// locked
+    ///
+    fn queue_locked(&self)->bool{
+        self.data().queuecount.load(Acquire)>=LOCKQUEUE
+    }
+    ///
+    /// spin until we can acquire a lock on queue by incrementing
+    /// it with LOCKQUEUE
+    ///
+    fn lock_queue(&self)
+    {
+        loop{
+            let lock=self.data().queuecount.fetch_update(
+                                        SeqCst,
+                                        SeqCst,
+                                        |x|{
+                                            if x<LOCKQUEUE{
+                                                Some(x+LOCKQUEUE)
+                                            }else{
+                                                None
+                                            }
+                                        });
+            match lock {
+                Err(_)=>{
+                    /*  it is already locked, so we spin*/
+                    std::hint::spin_loop();
+                },
+                Ok(_x)=>{
+                    /*  locked successfully*/
+                    break;
+                },
+            }
+
+        }
+    }
+    ///
+    /// check that queue is locked and unlock it by decrementing
+    /// by LOCKQUEUE
+    ///
+    fn unlock_queue(&self)
+    {
+        let _lock=self.data().queuecount.fetch_update(
+                                    SeqCst,
+                                    SeqCst,
+                                    |x|{
+                                        if x<LOCKQUEUE {
+                                            panic!("trying to unlock nonlocked queue");
+                                        }else{
+                                            Some(x-LOCKQUEUE)
+                                        }
+                                    });
+    }
+    ///
+    /// lock queue and insert ourselves to it and park
+    /// waiting for the time in the future when we are
+    /// unparked as the first in the queue
+    ///
+    fn enqueue(&self,t:LockType){
+        let link=Box::leak(Box::new(QueueLink::new(t)));
+
+        //  lock and increment queue size
+        self.lock_queue();
+        self.inc_queue();
+
+        //  insert ourselves into queue
+        unsafe{
+            let next=(*self.get_queuedata()).endqueue;
+            if next.is_null()
+            {
+                (*self.get_queuedata()).queue=link;
+            }else{
+                (*next).next=link;
+            }
+            (*self.get_queuedata()).endqueue=link;
+        }
+        //  unlock queue for others to modify and see
+        self.unlock_queue();
+
+        //  and park, ready to spin on return
+        loop{
+            std::thread::park();
+            self.lock_queue();
+            let amfirst=unsafe{
+                    (*(*self.get_queuedata()).queue).thread.id()==std::thread::current().id()
+                };
+            if amfirst
+            {
+                unsafe{
+                    //  dequeue
+                    let me=(*self.get_queuedata()).queue;
+                        (*self.get_queuedata()).queue=(*(*self.get_queuedata()).queue).next;
+                    //  if we were the last
+                    if me==(*self.get_queuedata()).endqueue
+                    {
+                        (*self.get_queuedata()).endqueue=std::ptr::null_mut();
+                    }
+                }
+                //TBD release "me" by boxing and dropping
+                self.dec_queue();
+                self.unlock_queue();
+                break;
+            }else{
+                self.wakenext();
+                self.unlock_queue();
+            }
+        }
+    }
+    ///
+    /// increment number of threads blocked in queue
+    ///
+    fn inc_queue(&self)
+    {
+        self.data().queuecount.fetch_add(
+                                    1,
+                                    SeqCst);
+    }
+    ///
+    /// decrement number of threads blocked in queue
+    ///
+    fn dec_queue(&self)
+    {
+        self.data().queuecount.fetch_sub(1,SeqCst);
+    }
+    ///
+    /// assumes queue is already locked by us 
+    ///
+    fn wakenext(&self)
+    {
+        unsafe{
+            if !(*self.get_queuedata()).queue.is_null()
+            {
+                (*(*self.get_queuedata()).queue).thread.unpark();
+            }
+        }
+    }
+    ///
+    /// release write lock
+    ///
     fn unwritelock(&self)
     {
         let lock=self.data().lockcount.compare_exchange(
@@ -55,6 +239,9 @@ impl<T: Sync + Send> Cura<T> {
         }
         //TBD here , wake up the next thread from queue thread.unpark()
     }
+    ///
+    /// decrement number of readlocks held
+    ///
     fn unreadlock(&self)
     {
         let lock=self.data().lockcount.fetch_sub(1,SeqCst);
