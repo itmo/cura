@@ -33,6 +33,35 @@ struct QueueData
     queue:*mut QueueLink,
     endqueue:*mut QueueLink,
 }
+impl QueueData
+{
+    ///
+    /// queue stuff into end of queue
+    ///
+    fn enqueue(&mut self,t:LockType)
+    {
+        let link=Box::leak(Box::new(QueueLink::new(t)));    
+        let next=self.endqueue;
+        if next.is_null()
+        {
+            self.queue=link;
+        }else{
+            unsafe{(*next).next=link;}
+        }
+        self.endqueue=link;
+    }
+    fn dequeue(&mut self)
+    {
+        //  dequeue
+        let me=self.queue;
+        unsafe{self.queue=(*self.queue).next;}
+        //  if we were the last
+        if me==self.endqueue
+        {
+            self.endqueue=std::ptr::null_mut();
+        }
+    }
+}
 enum LockType
 {
     Read,
@@ -148,7 +177,6 @@ impl<T: Sync + Send> Cura<T> {
     /// unparked as the first in the queue
     ///
     fn enqueue(&self,t:LockType){
-        let link=Box::leak(Box::new(QueueLink::new(t)));
 
         //  lock and increment queue size
         self.lock_queue();
@@ -156,14 +184,7 @@ impl<T: Sync + Send> Cura<T> {
 
         //  insert ourselves into queue
         unsafe{
-            let next=(*self.get_queuedata()).endqueue;
-            if next.is_null()
-            {
-                (*self.get_queuedata()).queue=link;
-            }else{
-                (*next).next=link;
-            }
-            (*self.get_queuedata()).endqueue=link;
+            (*self.get_queuedata()).enqueue(t);
         }
         //  unlock queue for others to modify and see
         self.unlock_queue();
@@ -178,14 +199,7 @@ impl<T: Sync + Send> Cura<T> {
             if amfirst
             {
                 unsafe{
-                    //  dequeue
-                    let me=(*self.get_queuedata()).queue;
-                        (*self.get_queuedata()).queue=(*(*self.get_queuedata()).queue).next;
-                    //  if we were the last
-                    if me==(*self.get_queuedata()).endqueue
-                    {
-                        (*self.get_queuedata()).endqueue=std::ptr::null_mut();
-                    }
+                    (*self.get_queuedata()).dequeue();
                 }
                 //TBD release "me" by boxing and dropping
                 self.dec_queue();
