@@ -5,9 +5,11 @@ use std::sync::atomic::{AtomicUsize,AtomicI32,AtomicU32};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
 use std::thread::Thread;
+use std::time::{SystemTime,UNIX_EPOCH};
 const LOCKED:i32=-999;
 const FREE:i32=0;
 const LOCKQUEUE:u32=u32::MAX/2;
+
 ///
 /// a sort of an Arc that will both readwrite lock , be easy to
 /// handle and is cloneable and assignable.
@@ -60,8 +62,12 @@ impl QueueData
         {
             self.endqueue=std::ptr::null_mut();
         }
+        unsafe {
+            drop(Box::from_raw(me));
+        }
     }
 }
+#[derive(PartialEq)]
 enum LockType
 {
     Read,
@@ -110,9 +116,15 @@ impl<T: Sync + Send> Cura<T> {
             }))),
         }
     }
+    ///
+    /// util to get accesss to curadata
+    ///
     fn data(&self) -> &CuraData<T> {
         unsafe { self.ptr.as_ref() }
     }
+    ///
+    /// util to get access to the internal queuedata
+    ///
     fn get_queuedata(&self) -> *mut QueueData
     {
         self.data().queuedata.get()
@@ -201,7 +213,6 @@ impl<T: Sync + Send> Cura<T> {
                 unsafe{
                     (*self.get_queuedata()).dequeue();
                 }
-                //TBD release "me" by boxing and dropping
                 self.dec_queue();
                 self.unlock_queue();
                 break;
@@ -228,6 +239,13 @@ impl<T: Sync + Send> Cura<T> {
         self.data().queuecount.fetch_sub(1,SeqCst);
     }
     ///
+    /// find out approximate size of queue
+    ///
+    fn queue_size(&self)->u32
+    {
+        self.data().queuecount.load(Acquire)
+    }
+    ///
     /// assumes queue is already locked by us 
     ///
     fn wakenext(&self)
@@ -240,10 +258,32 @@ impl<T: Sync + Send> Cura<T> {
         }
     }
     ///
+    /// wake reader  in front of queue
+    ///
+    fn wakereader(&self)
+    {
+        //TBD
+        self.lock_queue();
+        unsafe{
+            let qdata=self.get_queuedata();
+            if !(*qdata).queue.is_null()
+            {
+                if (*(*qdata).queue).lock==LockType::Read
+                {
+                    (*(*qdata).queue).thread.unpark();
+                }
+            }
+        }
+        self.unlock_queue();
+    }
+    ///
     /// release write lock
     ///
     fn unwritelock(&self)
     {
+        self.lock_queue();
+        self.wakenext();
+        self.unlock_queue();
         let lock=self.data().lockcount.compare_exchange(
                                     LOCKED,FREE,SeqCst,SeqCst);
         match lock {
@@ -251,7 +291,6 @@ impl<T: Sync + Send> Cura<T> {
             Ok(x)=>panic!("was supposed to be locked but was {}",x),
             Err(x)=>panic!("was supposed to be locked but was {}",x),
         }
-        //TBD here , wake up the next thread from queue thread.unpark()
     }
     ///
     /// decrement number of readlocks held
@@ -263,7 +302,9 @@ impl<T: Sync + Send> Cura<T> {
         {
             panic!("was supposed to be readlocked but was {}",1);
         }
-        //TBD here , wake up the next thread from queue
+        self.lock_queue();
+        self.wakenext();
+        self.unlock_queue();
     }
     ///
     /// readlock a 'Cura',returning a guard that can be
@@ -272,6 +313,9 @@ impl<T: Sync + Send> Cura<T> {
     pub fn read(&self)->ReadGuard<T>
     {
         //TBD think through these memory orderings
+
+        //  how many times have we looped here...
+        let mut loops=0;
         loop{
             let lock=self.data().lockcount.fetch_update(
                                         SeqCst,
@@ -285,15 +329,24 @@ impl<T: Sync + Send> Cura<T> {
                                         });
             match lock {
                 Err(_)=>{/*   its probably writelocked,so we will spin*/
-                    std::hint::spin_loop();
+                    if loops>3 || self.queue_size()>0
+                    {
+                        self.enqueue(LockType::Read);
+                        loops=0;
+                    }else{
+                        loops+=1;
+                        std::hint::spin_loop();
+                    }
                 },
                 Ok(_x)=>{/*    x readers,including us*/
+                    //  let everyone else in from the queue
+                    if self.queue_size()>0
+                    {
+                        self.wakereader();
+                    }
                     break;
                 },
             }
-            //TBD consider deadlock detection  and
-            //    queue/park instead of spin
-            // thread::park();
         }
         ReadGuard{
             cura:self,
@@ -306,6 +359,7 @@ impl<T: Sync + Send> Cura<T> {
     pub fn write(&self)->Guard<T>
     {
         //TBD think through these memory orderings
+        let mut loops=0;
         loop{
             let lock=self.data().lockcount.fetch_update(
                                         SeqCst,
@@ -319,14 +373,19 @@ impl<T: Sync + Send> Cura<T> {
                                         });
             match lock {
                 Err(_)=>{/*   its write/readlocked,so we will spin*/
-                    std::hint::spin_loop();
+                    if loops>3 || self.queue_size()>0
+                    {
+                        self.enqueue(LockType::Write);
+                        loops=0;
+                    }else{
+                        loops+=1;
+                        std::hint::spin_loop();
+                    }
                 },
                 Ok(_x)=>{/*    should be just us , writing*/
                     break;
                 },
             }
-            //TBD consider deadlock detection  and
-            //    queue/park instead of spin
         }
         Guard{
             cura:self,
@@ -435,6 +494,16 @@ impl<T: Sync + Send> Deref for ReadGuard<'_,T> {
         }
     }
 }
+pub fn current_time()->u128{
+    SystemTime::now().
+        duration_since(UNIX_EPOCH).
+        expect("weird shit happened").
+        as_millis()
+}
+pub fn sleep(millis:u32){
+    std::thread::sleep(std::time::Duration::from_millis(millis.into()));
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -474,7 +543,78 @@ mod tests {
         y.read().testing(); //TBD convert this to work with deref
         assert_eq!(21, NUM_HITS.load(Acquire));
     }
+    #[test]
+    fn advanced_usecases()
+    {
+        static STATE:AtomicUsize=AtomicUsize::new(0);
 
+        struct Foo{
+            id:u16,
+        }
+        impl Foo {
+            pub fn new(id:u16)->Foo{
+                Foo{id:id}
+            }
+            pub fn testing(&mut self,id:u16) {
+                self.id=id;
+            }
+            pub fn id(&self)->u16
+            {
+                self.id
+            }
+        }
+        /*  create ref*/
+        let x=Cura::new(Foo::new(1));
+        let y=x.clone();
+        /*  writelock one ref*/
+        let mut w=y.write();
+        //let start=current_time();
+        /*  start creating write and read threads to block*/
+        let mut threads=Vec::new();
+        for i in 0..30 {
+            let c=x.clone();
+            let write= i%5==0;
+            let i=i;
+            let t = std::thread::spawn(move || {
+                if write {
+                    let c=c.clone();
+                    loop{
+                        println!("loop {} {}",i,write);
+                        let foo=c.write();
+                        STATE.fetch_add(1,SeqCst);
+                        //block and loop until STATE
+                        if STATE.load(SeqCst)>=(i+1)
+                        {
+                            break;
+                        }
+                    }
+                }else{
+                    let c=c.clone();
+                    loop{
+                        println!("loop {} {}",i,write);
+                        let foo=c.read();
+                        STATE.fetch_add(1,SeqCst);
+                        //TBD loop here until STATE>=i
+                        if STATE.load(SeqCst)>=(i+1)
+                        {
+                            break;
+                        }
+                    }
+                }
+            });
+            threads.push(t);
+        }
+        sleep(1000);
+        drop(w);
+        while let Some(t) = threads.pop()
+        {
+            t.join().unwrap();
+            println!("joined");
+        }
+
+        //let end=current_time();
+        //println!("took:{}",(end-start));
+    }
     #[test]
     fn it_works() {
         static DROPS: AtomicUsize = AtomicUsize::new(0);
