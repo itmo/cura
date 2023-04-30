@@ -14,12 +14,18 @@
 //! # Example
 //! ```
 //! use cura::Cura;
-//! let t:i32=2;
+//! let t:i32=1;
 //! let foo=Cura::new(t);
 //! let a=foo.clone();
 //! let b=foo.clone();
 //!
 //! {
+//!     assert_eq!(*a.read(),1);
+//!     {
+//!         a.alter(|s|{
+//!            Some(2)
+//!         });
+//!     }
 //!     let lock=a.read();
 //!     let v=*lock;
 //!     assert_eq!(v,2)
