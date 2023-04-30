@@ -246,19 +246,23 @@ impl<T: Sync + Send> Cura<T> {
     /// ```
     /// use cura::Cura;
     /// let t=Cura::new(1);
-    /// t.alter(|x|{
+    /// let res=t.alter(|x|{ //this is a mutable ref, can be altered that way
     ///     if(*x==1){
-    ///         Some(2)
+    ///         Some(2) //alter this way 
     ///     }else{
-    ///         None  //dont alter
+    ///         None  //dont alter,or alter via mutable ref
     ///     }
     ///  });
+    /// match res {
+    ///     None=>{/* no change made*/},
+    ///     Some(_)=>{/*change made*/},
+    /// }
     ///
     /// ```
-    pub fn alter(&self,f:fn(&T)->Option<T>)->Option<()>
+    pub fn alter(&self,f:fn(&mut T)->Option<T>)->Option<()>
     {
         let mut lock=self.write(); //lock
-        let v=f(&*lock);
+        let v=f(&mut *lock);
         match v{
             None=>{None},
             Some(tt)=>{
