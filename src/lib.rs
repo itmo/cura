@@ -527,7 +527,7 @@ impl<T: Sync + Send> Deref for ReadGuard<'_,T> {
 ///
 /// util to get current time in millis for testing
 ///
-pub fn current_time()->u128{
+fn current_time()->u128{
     SystemTime::now().
         duration_since(UNIX_EPOCH).
         expect("weird shit happened").
@@ -536,7 +536,7 @@ pub fn current_time()->u128{
 ///
 /// util to sĺeep for a few millis
 ///
-pub fn sleep(millis:u32){
+fn sleep(millis:u32){
     std::thread::sleep(std::time::Duration::from_millis(millis.into()));
 }
 
