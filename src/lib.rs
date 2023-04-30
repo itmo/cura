@@ -123,6 +123,9 @@ impl QueueLink
         useful methods
     */
 }
+///
+/// Cura public interface
+///
 impl<T: Sync + Send> Cura<T> {
     ///
     /// constructor for a Cura 
@@ -146,6 +149,123 @@ impl<T: Sync + Send> Cura<T> {
             }))),
         }
     }
+    ///
+    /// readlock a 'Cura',returning a guard that can be
+    /// dereferenced for read-only operations
+    ///
+    pub fn read(&self)->ReadGuard<T>
+    {
+        //TBD think through these memory orderings
+
+        //  how many times have we looped here...
+        let mut loops=0;
+        loop{
+            let lock=self.data().lockcount.fetch_update(
+                                        SeqCst,
+                                        SeqCst,
+                                        |x|{
+                                            if x>=0{
+                                                Some(x+1)
+                                            }else{
+                                                None
+                                            }
+                                        });
+            match lock {
+                Err(_)=>{/*   its probably writelocked,so we will spin*/
+                    if loops>3 || self.queue_size()>0
+                    {
+                        self.enqueue(LockType::Read);
+                        loops=0;
+                    }else{
+                        loops+=1;
+                        std::hint::spin_loop();
+                    }
+                },
+                Ok(_x)=>{/*    x readers,including us*/
+                    //  let everyone else in from the queue
+                    if self.queue_size()>0
+                    {
+                        self.wakereader();
+                    }
+                    break;
+                },
+            }
+        }
+        ReadGuard{
+            cura:self,
+        }
+    }
+    ///
+    /// writelock a 'Cura' , returning a guard that can be
+    /// dereferenced for write-operations.
+    ///
+    pub fn write(&self)->Guard<T>
+    {
+        //TBD think through these memory orderings
+        let mut loops=0;
+        loop{
+            let lock=self.data().lockcount.fetch_update(
+                                        SeqCst,
+                                        SeqCst,
+                                        |x|{
+                                            if x==FREE{
+                                                Some(LOCKED)
+                                            }else{
+                                                None
+                                            }
+                                        });
+            match lock {
+                Err(_)=>{/*   its write/readlocked,so we will spin*/
+                    if loops>3 || self.queue_size()>0
+                    {
+                        self.enqueue(LockType::Write);
+                        loops=0;
+                    }else{
+                        loops+=1;
+                        std::hint::spin_loop();
+                    }
+                },
+                Ok(_x)=>{/*    should be just us , writing*/
+                    break;
+                },
+            }
+        }
+        Guard{
+            cura:self,
+        }
+    }
+    ///
+    /// transparently take a readlock, attempt to mutate the value
+    /// and then release the lock
+    /// ```
+    /// use cura::Cura;
+    /// let t=Cura::new(1);
+    /// t.alter(|x|{
+    ///     if(*x==1){
+    ///         Some(2)
+    ///     }else{
+    ///         None  //dont alter
+    ///     }
+    ///  });
+    ///
+    /// ```
+    pub fn alter(&self,f:fn(&T)->Option<T>)->Option<()>
+    {
+        let mut lock=self.write(); //lock
+        let v=f(&*lock);
+        match v{
+            None=>{None},
+            Some(tt)=>{
+                (*lock)=tt;
+                Some(())
+            },
+        }
+    }
+}
+///
+/// cura private stuff
+///
+impl<T: Sync + Send> Cura<T> {
     ///
     /// util to get accesss to curadata
     ///
@@ -336,93 +456,8 @@ impl<T: Sync + Send> Cura<T> {
         self.wakenext();
         self.unlock_queue();
     }
-    ///
-    /// readlock a 'Cura',returning a guard that can be
-    /// dereferenced for read-only operations
-    ///
-    pub fn read(&self)->ReadGuard<T>
-    {
-        //TBD think through these memory orderings
-
-        //  how many times have we looped here...
-        let mut loops=0;
-        loop{
-            let lock=self.data().lockcount.fetch_update(
-                                        SeqCst,
-                                        SeqCst,
-                                        |x|{
-                                            if x>=0{
-                                                Some(x+1)
-                                            }else{
-                                                None
-                                            }
-                                        });
-            match lock {
-                Err(_)=>{/*   its probably writelocked,so we will spin*/
-                    if loops>3 || self.queue_size()>0
-                    {
-                        self.enqueue(LockType::Read);
-                        loops=0;
-                    }else{
-                        loops+=1;
-                        std::hint::spin_loop();
-                    }
-                },
-                Ok(_x)=>{/*    x readers,including us*/
-                    //  let everyone else in from the queue
-                    if self.queue_size()>0
-                    {
-                        self.wakereader();
-                    }
-                    break;
-                },
-            }
-        }
-        ReadGuard{
-            cura:self,
-        }
-    }
-    ///
-    /// writelock a 'Cura' , returning a guard that can be
-    /// dereferenced for write-operations.
-    ///
-    pub fn write(&self)->Guard<T>
-    {
-        //TBD think through these memory orderings
-        let mut loops=0;
-        loop{
-            let lock=self.data().lockcount.fetch_update(
-                                        SeqCst,
-                                        SeqCst,
-                                        |x|{
-                                            if x==FREE{
-                                                Some(LOCKED)
-                                            }else{
-                                                None
-                                            }
-                                        });
-            match lock {
-                Err(_)=>{/*   its write/readlocked,so we will spin*/
-                    if loops>3 || self.queue_size()>0
-                    {
-                        self.enqueue(LockType::Write);
-                        loops=0;
-                    }else{
-                        loops+=1;
-                        std::hint::spin_loop();
-                    }
-                },
-                Ok(_x)=>{/*    should be just us , writing*/
-                    break;
-                },
-            }
-        }
-        Guard{
-            cura:self,
-        }
-    }
-    //pub fn alter
 }
+
 /**
  *  implement send and sync since thats all we want
  */
@@ -650,6 +685,27 @@ mod tests {
 
         //let end=current_time();
         //println!("took:{}",(end-start));
+    }
+    #[test]
+    fn alter_works()
+    {
+        let t=Cura::new(3);
+        t.alter(|x|{
+            if *x==2{
+                Some(3)
+            }else{
+                None
+            }
+        });
+
+        t.alter(|x|{
+            if *x==3{
+                Some(4)
+            }else{
+                None
+            }
+        });
+
     }
     #[test]
     fn it_works() {
