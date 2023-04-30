@@ -241,7 +241,7 @@ impl<T: Sync + Send> Cura<T> {
         }
     }
     ///
-    /// transparently take a readlock, attempt to mutate the value
+    /// transparently take a writelock, attempt to mutate the value
     /// and then release the lock
     /// ```
     /// use cura::Cura;
