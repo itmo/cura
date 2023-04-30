@@ -1,4 +1,36 @@
 #![warn(missing_docs)]
+//! An attempt at creating an Arc-RwLock combination that is straightforward
+//! to use and no hassle , instead of worrying about being fast and lean. 
+//!
+//! * cloning referefences works like Arc
+//! * made for sharing objects between threads without worry
+//! * locking things works like RwLock with write() or read()
+//! * it spins a few times and then queues if a lock is not obtained
+//! * miri seems to be happy , so i trust it doesnt leak too much memory etc.
+//! * requires that everything you stick into it is Send+Sync
+//! * no need to constantly .unwrap() things instead it will just
+//!   block forever or blow up
+//!
+//! # Example
+//! ```
+//! use cura::Cura;
+//! let t:i32=2;
+//! let foo=Cura::new(t);
+//! let a=foo.clone();
+//! let b=foo.clone();
+//!
+//! {
+//!     let lock=a.read();
+//!     let v=*lock;
+//!     assert_eq!(v,2)
+//! }//lock dropped here
+//! {
+//!     (*b.write())+=1; //lock dropped here i think 
+//! }
+//!
+//! assert_eq!((*a.read()),3);
+//!
+//! ```
 use std::ops::{Deref,DerefMut};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize,AtomicI32,AtomicU32};
@@ -10,16 +42,14 @@ const LOCKED:i32=-999;
 const FREE:i32=0;
 const LOCKQUEUE:u32=u32::MAX/2;
 
-///
 /// a sort of an Arc that will both readwrite lock , be easy to
-/// handle and is cloneable and assignable.
+/// handle and is cloneable
 /// ```
+/// use cura::Cura;
+/// let s=Cura::new(1);
+/// let a=s.clone();
 ///
-/// assert_eq!(0,0);
 /// ```
-///
-///
-///
 pub struct Cura<T: Sync + Send> {
     ptr: NonNull<CuraData<T>>,
 }
@@ -129,13 +159,14 @@ impl<T: Sync + Send> Cura<T> {
     {
         self.data().queuedata.get()
     }
+    /*
     ///
     /// compare queue count to LOCḰQUEUE to see if it is already
     /// locked
     ///
     fn queue_locked(&self)->bool{
         self.data().queuecount.load(Acquire)>=LOCKQUEUE
-    }
+    }*/
     ///
     /// spin until we can acquire a lock on queue by incrementing
     /// it with LOCKQUEUE
@@ -262,7 +293,6 @@ impl<T: Sync + Send> Cura<T> {
     ///
     fn wakereader(&self)
     {
-        //TBD
         self.lock_queue();
         unsafe{
             let qdata=self.get_queuedata();
@@ -494,12 +524,18 @@ impl<T: Sync + Send> Deref for ReadGuard<'_,T> {
         }
     }
 }
+///
+/// util to get current time in millis for testing
+///
 pub fn current_time()->u128{
     SystemTime::now().
         duration_since(UNIX_EPOCH).
         expect("weird shit happened").
         as_millis()
 }
+///
+/// util to sĺeep for a few millis
+///
 pub fn sleep(millis:u32){
     std::thread::sleep(std::time::Duration::from_millis(millis.into()));
 }
@@ -567,7 +603,7 @@ mod tests {
         let x=Cura::new(Foo::new(1));
         let y=x.clone();
         /*  writelock one ref*/
-        let mut w=y.write();
+        let w=y.write();
         //let start=current_time();
         /*  start creating write and read threads to block*/
         let mut threads=Vec::new();
@@ -580,7 +616,7 @@ mod tests {
                     let c=c.clone();
                     loop{
                         println!("loop {} {}",i,write);
-                        let foo=c.write();
+                        let _foo=c.write();
                         STATE.fetch_add(1,SeqCst);
                         //block and loop until STATE
                         if STATE.load(SeqCst)>=(i+1)
@@ -592,7 +628,7 @@ mod tests {
                     let c=c.clone();
                     loop{
                         println!("loop {} {}",i,write);
-                        let foo=c.read();
+                        let _foo=c.read();
                         STATE.fetch_add(1,SeqCst);
                         //TBD loop here until STATE>=i
                         if STATE.load(SeqCst)>=(i+1)
