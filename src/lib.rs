@@ -21,7 +21,12 @@
 //! }
 //! #[derive(Debug)]
 //! struct FF{i:i32,};
+//! struct BB{i:i32};
 //! impl Foo for FF{
+//!     fn get(&self)->i32{return self.i;}
+//!     fn set(&mut self,i:i32){self.i=i;}
+//! }
+//! impl Foo for BB{
 //!     fn get(&self)->i32{return self.i;}
 //!     fn set(&mut self,i:i32){self.i=i;}
 //! }
@@ -35,6 +40,12 @@
 //!     {
 //!         a.alter(|s|{
 //!             s.set(2);
+//!             Some(())
+//!         });
+//!     }
+//!     {
+//!         a.alter(|s|{
+//!             *s=Box::new(BB{i:2});
 //!             Some(())
 //!         });
 //!     }
