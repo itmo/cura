@@ -14,27 +14,39 @@
 //! # Example
 //! ```
 //! use cura::Cura;
-//! let t:i32=1;
-//! let foo=Cura::new(t);
+//! trait Foo:Send+Sync
+//! {
+//!     fn get(&self)->i32;
+//!     fn set(&mut self,i:i32);
+//! }
+//! #[derive(Debug)]
+//! struct FF{i:i32,};
+//! impl Foo for FF{
+//!     fn get(&self)->i32{return self.i;}
+//!     fn set(&mut self,i:i32){self.i=i;}
+//! }
+//! let t=FF{i:1};
+//! let foo:Cura<Box<dyn Foo>>=Cura::new(Box::new(t));
 //! let a=foo.clone();
 //! let b=foo.clone();
 //!
 //! {
-//!     assert_eq!(*a.read(),1);
+//!     assert_eq!(a.read().get(),1);
 //!     {
 //!         a.alter(|s|{
-//!            Some(2)
+//!             s.set(2);
+//!             Some(())
 //!         });
 //!     }
 //!     let lock=a.read();
-//!     let v=*lock;
-//!     assert_eq!(v,2)
+//!     let v=lock;
+//!     assert_eq!(v.get(),2)
 //! }//lock dropped here
 //! {
-//!     (*b.write())+=1; //lock dropped here i think 
+//!     (*b.write()).set(3); //lock dropped here i think 
 //! }
 //!
-//! assert_eq!((*a.read()),3);
+//! assert_eq!((*a.read()).get(),3);
 //!
 //! ```
 use std::ops::{Deref,DerefMut};
@@ -61,10 +73,10 @@ pub struct Cura<T: Sync + Send> {
 }
 struct CuraData<T: Sync + Send> {
     count: AtomicUsize,
-    data: UnsafeCell<T>,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
     queuecount:AtomicU32, // number of threads,
     queuedata:UnsafeCell<QueueData>,
+    data: UnsafeCell<T>,
 }
 struct QueueData
 {
@@ -78,7 +90,7 @@ impl QueueData
     ///
     fn enqueue(&mut self,t:LockType)
     {
-        let link=Box::leak(Box::new(QueueLink::new(t)));    
+        let link=Box::leak(Box::new(QueueLink::new(t)));
         let next=self.endqueue;
         if next.is_null()
         {
@@ -132,7 +144,7 @@ impl QueueLink
 ///
 /// Cura public interface
 ///
-impl<T: Sync + Send> Cura<T> {
+impl<T:  Sync + Send> Cura<T> {
     ///
     /// constructor for a Cura 
     /// ```
@@ -248,9 +260,10 @@ impl<T: Sync + Send> Cura<T> {
     /// let t=Cura::new(1);
     /// let res=t.alter(|x|{ //this is a mutable ref, can be altered that way
     ///     if(*x==1){
-    ///         Some(2) //alter this way 
+    ///         *x=2;
+    ///         Some(()) //signal alteration
     ///     }else{
-    ///         None  //dont alter,or alter via mutable ref
+    ///         None  //signal not altered
     ///     }
     ///  });
     /// match res {
@@ -259,23 +272,23 @@ impl<T: Sync + Send> Cura<T> {
     /// }
     ///
     /// ```
-    pub fn alter(&self,f:fn(&mut T)->Option<T>)->Option<()>
+    pub fn alter(&self,f:fn(&mut T)->Option<()>)->Option<()>
     {
         let mut lock=self.write(); //lock
         let v=f(&mut *lock);
         match v{
             None=>{None},
-            Some(tt)=>{
-                (*lock)=tt;
+            Some(_)=>{
                 Some(())
             },
         }
     }
+    //TBD method to swap values with options
 }
 ///
 /// cura private stuff
 ///
-impl<T: Sync + Send> Cura<T> {
+impl<T:  Sync + Send> Cura<T> {
     ///
     /// util to get accesss to curadata
     ///
@@ -471,8 +484,8 @@ impl<T: Sync + Send> Cura<T> {
 /**
  *  implement send and sync since thats all we want
  */
-unsafe impl<T: Send + Sync> Send for Cura<T> {}
-unsafe impl<T: Send + Sync> Sync for Cura<T> {}
+unsafe impl<T:  Send + Sync> Send for Cura<T> {}
+unsafe impl<T:  Send + Sync> Sync for Cura<T> {}
 
 /**
  *  deref to make use simpler, this should also transparently
@@ -493,7 +506,7 @@ impl<T:Sync+Send> Deref for Cura<T>
 /**
  *  clone to make new references of the object
  */
-impl<T: Sync + Send> Clone for Cura<T> {
+impl<T:  Sync + Send> Clone for Cura<T> {
     fn clone(&self) -> Self {
         self.data().count.fetch_add(1, Relaxed);
         Cura { ptr: self.ptr }
@@ -502,7 +515,7 @@ impl<T: Sync + Send> Clone for Cura<T> {
 /**
  *  drop to clean up references
  */
-impl<T: Sync + Send> Drop for Cura<T> {
+impl<T:  Sync + Send> Drop for Cura<T> {
     fn drop(&mut self) {
         if self.data().count.fetch_sub(1, Release) == 1 {
             unsafe {
@@ -519,7 +532,7 @@ impl<T: Sync + Send> Drop for Cura<T> {
 ///
 #[must_use = "if unused the Lock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct Guard<'a,T:Send+Sync>
+pub struct Guard<'a,T: Send+Sync>
 {
     cura:&'a Cura<T>,
 }
@@ -702,7 +715,8 @@ mod tests {
         let t=Cura::new(3);
         t.alter(|x|{
             if *x==2{
-                Some(3)
+                *x=3;
+                Some(())
             }else{
                 None
             }
@@ -710,7 +724,8 @@ mod tests {
 
         t.alter(|x|{
             if *x==3{
-                Some(4)
+                *x=4;
+                Some(())
             }else{
                 None
             }
