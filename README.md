@@ -18,26 +18,38 @@ to use and no hassle , instead of worrying about being fast and lean.
 # Example
 ```rust
 use cura::Cura;
-let t:i32=1;
-let foo=Cura::new(t);
+trait Foo:Send+Sync
+{
+    fn get(&self)->i32;
+    fn set(&mut self,i:i32);
+}
+#[derive(Debug)]
+struct FF{i:i32,};
+impl Foo for FF{
+    fn get(&self)->i32{return self.i;}
+    fn set(&mut self,i:i32){self.i=i;}
+}
+let t=FF{i:1};
+let foo:Cura<Box<dyn Foo>>=Cura::new(Box::new(t));
 let a=foo.clone();
 let b=foo.clone();
 
 {
-    assert_eq!(*a.read(),1);
+    assert_eq!(a.read().get(),1);
     {
         a.alter(|s|{
-            Some(2)
+            s.set(2);
+            Some(())
         });
     }
     let lock=a.read();
-    let v=*lock;
-    assert_eq!(v,2)
+    let v=lock;
+    assert_eq!(v.get(),2)
 }//lock dropped here
 {
-    (*b.write())+=1; //lock dropped here i think 
+    (*b.write()).set(3); //lock dropped here i think 
 }
 
-assert_eq!((*a.read()),3);
+assert_eq!((*a.read()).get(),3);
 ```
 
