@@ -744,6 +744,28 @@ mod tests {
 
     }
     #[test]
+    fn loop_a_lot()
+    {
+        #[derive(Clone,Copy)]
+        enum Foo
+        {
+            Bing,
+            Bong,
+        }
+        let s=Cura::new(Foo::Bing);
+        let mut i=2000;
+        while i>0
+        {
+            match {*s.read()}.clone() {
+                Foo::Bing=>{
+                },
+                Foo::Bong=>{
+                },
+            }
+            i=i-1;
+        }
+    }
+    #[test]
     fn it_works() {
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
