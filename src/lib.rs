@@ -67,6 +67,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
 use std::thread::Thread;
 use std::time::{SystemTime,UNIX_EPOCH};
+use std::sync::Arc;
 const LOCKED:i32=-999;
 const FREE:i32=0;
 const LOCKQUEUE:u32=u32::MAX/2;
@@ -79,15 +80,15 @@ const LOCKQUEUE:u32=u32::MAX/2;
 /// let a=s.clone();
 ///
 /// ```
-pub struct Cura<T: Sync + Send> {
+pub struct Cura<T: Sync + Send +?Sized> {
     ptr: NonNull<CuraData<T>>,
 }
-struct CuraData<T: Sync + Send> {
+struct CuraData<T: Sync + Send+?Sized> {
     count: AtomicUsize,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
     queuecount:AtomicU32, // number of threads,
     queuedata:UnsafeCell<QueueData>,
-    data: UnsafeCell<T>,
+    data: UnsafeCell<Box<T>>,
 }
 struct QueueData
 {
@@ -155,7 +156,7 @@ impl QueueLink
 ///
 /// Cura public interface
 ///
-impl<T:  Sync + Send> Cura<T> {
+impl <T: Sync + Send> Cura<T> {
     ///
     /// constructor for a Cura 
     /// ```
@@ -164,6 +165,17 @@ impl<T:  Sync + Send> Cura<T> {
     ///     let foo=Cura::new(t); //instead of Arc::new(Mutex::new(t));
     /// ```
     pub fn new(t: T) -> Cura<T> {
+        Self::from_box(Box::new(t))
+    }
+}
+///
+/// Cura public interface
+///
+impl<T:  Sync + Send + ?Sized> Cura<T> {
+    ///
+    /// convert from box<T> to Cura<T>
+    ///
+    fn from_box(v: Box<T>) -> Cura<T> {
         let queuedata=UnsafeCell::new(QueueData{
                 queue:std::ptr::null_mut(),
                 endqueue:std::ptr::null_mut(),
@@ -171,7 +183,7 @@ impl<T:  Sync + Send> Cura<T> {
         Cura {
             ptr: NonNull::from(Box::leak(Box::new(CuraData {
                 count: AtomicUsize::new(1),
-                data: UnsafeCell::new(t),
+                data: UnsafeCell::new(v),
                 lockcount:AtomicI32::new(0),
                 queuecount:AtomicU32::new(0), //
                 queuedata:queuedata,
@@ -299,7 +311,7 @@ impl<T:  Sync + Send> Cura<T> {
 ///
 /// cura private stuff
 ///
-impl<T:  Sync + Send> Cura<T> {
+impl<T:  Sync + Send + ?Sized> Cura<T> {
     ///
     /// util to get accesss to curadata
     ///
@@ -517,7 +529,7 @@ impl<T:Sync+Send> Deref for Cura<T>
 /**
  *  clone to make new references of the object
  */
-impl<T:  Sync + Send> Clone for Cura<T> {
+impl<T:  Sync + Send +?Sized> Clone for Cura<T> {
     fn clone(&self) -> Self {
         self.data().count.fetch_add(1, Relaxed);
         Cura { ptr: self.ptr }
@@ -526,7 +538,7 @@ impl<T:  Sync + Send> Clone for Cura<T> {
 /**
  *  drop to clean up references
  */
-impl<T:  Sync + Send> Drop for Cura<T> {
+impl<T:  Sync + Send + ?Sized> Drop for Cura<T> {
     fn drop(&mut self) {
         if self.data().count.fetch_sub(1, Release) == 1 {
             unsafe {
@@ -543,17 +555,17 @@ impl<T:  Sync + Send> Drop for Cura<T> {
 ///
 #[must_use = "if unused the Lock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct Guard<'a,T: Send+Sync>
+pub struct Guard<'a,T: Send+Sync+?Sized>
 {
     cura:&'a Cura<T>,
 }
-impl<T:Send+Sync> Drop for Guard<'_,T>
+impl<T:Send+Sync+?Sized> Drop for Guard<'_,T>
 {
     fn drop(&mut self) {
         self.cura.unwritelock(); //TBD no need to do anything else?
     }
 }
-impl<T: Sync + Send> Deref for Guard<'_,T> {
+impl<T: Sync + Send+?Sized> Deref for Guard<'_,T> {
     type Target = T;
     fn deref(&self) -> &T { //TBD reference lifetime?
         unsafe{
@@ -561,7 +573,7 @@ impl<T: Sync + Send> Deref for Guard<'_,T> {
         }
     }
 }
-impl<T: Sync + Send> DerefMut for Guard<'_,T> {
+impl<T: Sync + Send + ?Sized> DerefMut for Guard<'_,T> {
     fn deref_mut(&mut self) -> &mut T { //TBD reference lifetime?
         unsafe {
             &mut *self.cura.data().data.get()
@@ -575,17 +587,17 @@ impl<T: Sync + Send> DerefMut for Guard<'_,T> {
  */
 #[must_use = "if unused the Lock will immediately unlock"]
 #[clippy::has_significant_drop]
-pub struct ReadGuard<'a,T:Send+Sync>
+pub struct ReadGuard<'a,T:Send+Sync+?Sized>
 {
     cura:&'a Cura<T>,
 }
-impl<T:Send+Sync> Drop for ReadGuard<'_,T>
+impl<T:Send+Sync+?Sized> Drop for ReadGuard<'_,T>
 {
     fn drop(&mut self) {
         self.cura.unreadlock(); //TBD nothing else?
     }
 }
-impl<T: Sync + Send> Deref for ReadGuard<'_,T> {
+impl<T: Sync + Send + ?Sized> Deref for ReadGuard<'_,T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe{
@@ -760,6 +772,39 @@ mod tests {
                 Foo::Bing=>{
                 },
                 Foo::Bong=>{
+                },
+            }
+            i=i-1;
+        }
+    }
+    #[test]
+    fn loop_a_lot_box()
+    {
+        #[derive(Clone,Copy)]
+        enum EE
+        {
+            Bing,
+            Bong,
+        }
+        trait Foo:Send+Sync
+        {
+            fn get(&self)->EE
+            {
+                return EE::Bing;
+            }
+        }
+        struct FF;
+        impl Foo for FF{};
+        let t=Box::new(FF{});
+        let s:Cura<dyn Foo>=Cura::from_box(t);
+        let mut i=2000;
+        while i>0
+        {
+            match {s.read()}.get().clone() {
+                EE::Bing=>{                    
+                },
+                EE::Bong=>{
+                    panic!("never here");
                 },
             }
             i=i-1;
