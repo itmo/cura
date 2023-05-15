@@ -25,20 +25,38 @@ trait Foo:Send+Sync
 }
 #[derive(Debug)]
 struct FF{i:i32,};
+struct BB{i:i32};
+//!
 impl Foo for FF{
     fn get(&self)->i32{return self.i;}
     fn set(&mut self,i:i32){self.i=i;}
 }
+//!
+impl Foo for BB{
+    fn get(&self)->i32{return self.i;}
+    fn set(&mut self,i:i32){self.i=i;}
+}
+//!
 let t=FF{i:1};
+//!
+// you can do straight "from_box" but currently its impossible to
+// "alter" unsized types
+let foo2:Cura<dyn Foo>=Cura::from_box(Box::new(FF{i:2}));
 let foo:Cura<Box<dyn Foo>>=Cura::new(Box::new(t));
 let a=foo.clone();
 let b=foo.clone();
-
+//!
 {
     assert_eq!(a.read().get(),1);
     {
         a.alter(|s|{
             s.set(2);
+            Some(())
+        });
+    }
+    {
+        a.alter(|s|{ //this only works for Sized types
+            *s=Box::new(BB{i:2});
             Some(())
         });
     }
@@ -49,7 +67,7 @@ let b=foo.clone();
 {
     (*b.write()).set(3); //lock dropped here i think 
 }
-
+//!
 assert_eq!((*a.read()).get(),3);
+//!
 ```
-
