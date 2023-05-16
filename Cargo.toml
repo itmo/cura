@@ -1,6 +1,6 @@
 [package]
 name = "cura"
-version = "0.7.2"
+version = "0.8.0"
 edition = "2021"
 repository = "https://github.com/itmo/cura"
 description = "arc-lock-system that should clean up the code a lot"
