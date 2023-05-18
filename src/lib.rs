@@ -73,7 +73,6 @@ use std::sync::atomic::{AtomicUsize,AtomicI32,AtomicU32};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
 use std::thread::Thread;
-use std::time::{SystemTime,UNIX_EPOCH};
 use std::marker::PhantomData;
 const LOCKED:i32=-999;
 const FREE:i32=0;
@@ -89,16 +88,16 @@ const LOCKQUEUE:u32=u32::MAX/2;
 /// ```
 pub struct Cura<T: Sync + Send +?Sized> {
     ptr: NonNull<CuraData<T>>,
-    _phantom:PhantomData<CuraData<T>>,
+    //_phantom:PhantomData<CuraData<T>>,
     //dummy:i32,
 }
 struct CuraData<T: Sync + Send+?Sized> {
-    data: UnsafeCell<Box<T>>,
+    data: *const Box<T>, //pointer to Box<T>
     queuedata:UnsafeCell<QueueData>,
     count: AtomicUsize,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
     queuecount:AtomicU32, // number of threads,
-    _phantom:PhantomData<T>,
+    //_phantom:PhantomData<T>,
 }
 struct QueueData
 {
@@ -193,13 +192,13 @@ impl<T:  Sync + Send + ?Sized> Cura<T> {
         Cura {
             ptr: NonNull::from(Box::leak(Box::new(CuraData {
                 count: AtomicUsize::new(1),
-                data: UnsafeCell::new(v),
+                data: Box::leak(Box::new(v)),
                 lockcount:AtomicI32::new(0),
                 queuecount:AtomicU32::new(0), //
                 queuedata:queuedata,
-                _phantom:PhantomData,
+                //_phantom:PhantomData,
             }))),
-            _phantom:PhantomData,
+            //_phantom:PhantomData,
             //dummy:0,
         }
     }
@@ -547,7 +546,7 @@ impl<T:  Sync + Send +?Sized> Clone for Cura<T> {
         self.data().count.fetch_add(1, Relaxed);
         Cura {
             ptr: self.ptr,
-            _phantom:PhantomData,
+            //_phantom:PhantomData,
             //dummy:0,
             }
     }
@@ -561,6 +560,16 @@ impl<T:  Sync + Send + ?Sized> Drop for Cura<T> {
             unsafe {
                 drop(Box::from_raw(self.ptr.as_ptr()));
             }
+        }
+    }
+}
+/**
+ *  drop to clean up references
+ */
+impl<T:  Sync + Send + ?Sized> Drop for CuraData<T> {
+    fn drop(&mut self) {
+        unsafe {
+            drop(Box::from_raw(self.data as *mut Box<T>));
         }
     }
 }
@@ -586,14 +595,14 @@ impl<T: Sync + Send+?Sized> Deref for Guard<'_,T> {
     type Target = T;
     fn deref(&self) -> &T { //TBD reference lifetime?
         unsafe{
-            &*self.cura.data().data.get()
+            &*self.cura.data().data
         }
     }
 }
 impl<T: Sync + Send + ?Sized> DerefMut for Guard<'_,T> {
     fn deref_mut(&mut self) -> &mut T { //TBD reference lifetime?
         unsafe {
-            &mut *self.cura.data().data.get()
+            &mut *(self.cura.data().data as *mut Box<T>)
         }
     }
 }
@@ -618,31 +627,32 @@ impl<T: Sync + Send + ?Sized> Deref for ReadGuard<'_,T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe{
-            &*self.cura.data().data.get()
+            &*self.cura.data().data
         }
     }
 }
 
-///
-/// util to get current time in millis for testing
-///
-fn current_time()->u128{
-    SystemTime::now().
-        duration_since(UNIX_EPOCH).
-        expect("weird shit happened").
-        as_millis()
-}
-///
-/// util to sĺeep for a few millis
-///
-fn sleep(millis:u32){
-    std::thread::sleep(std::time::Duration::from_millis(millis.into()));
-}
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime,UNIX_EPOCH};
+    ///
+    /// util to get current time in millis for testing
+    ///
+    fn current_time()->u128{
+        SystemTime::now().
+            duration_since(UNIX_EPOCH).
+            expect("weird shit happened").
+            as_millis()
+    }
+    ///
+    /// util to sĺeep for a few millis
+    ///
+    fn sleep(millis:u32){
+        std::thread::sleep(std::time::Duration::from_millis(millis.into()));
+    }
     #[test]
     fn basic_usecases() {
 
@@ -872,7 +882,7 @@ mod tests {
             }
         }
         struct FF;
-        impl Foo for FF{};
+        impl Foo for FF{}
         let t=Box::new(FF{});
         let s:Cura<dyn Foo>=Cura::from_box(t);
         let mut i=2000;
