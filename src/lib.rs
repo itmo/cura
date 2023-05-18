@@ -89,7 +89,7 @@ const LOCKQUEUE:u32=u32::MAX/2;
 /// ```
 pub struct Cura<T: Sync + Send +?Sized> {
     ptr: NonNull<CuraData<T>>,
-    phantom:PhantomData<CuraData<T>>,
+    _phantom:PhantomData<CuraData<T>>,
     //dummy:i32,
 }
 struct CuraData<T: Sync + Send+?Sized> {
@@ -98,6 +98,7 @@ struct CuraData<T: Sync + Send+?Sized> {
     count: AtomicUsize,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
     queuecount:AtomicU32, // number of threads,
+    _phantom:PhantomData<T>,
 }
 struct QueueData
 {
@@ -196,8 +197,9 @@ impl<T:  Sync + Send + ?Sized> Cura<T> {
                 lockcount:AtomicI32::new(0),
                 queuecount:AtomicU32::new(0), //
                 queuedata:queuedata,
+                _phantom:PhantomData,
             }))),
-            phantom:PhantomData,
+            _phantom:PhantomData,
             //dummy:0,
         }
     }
@@ -545,7 +547,7 @@ impl<T:  Sync + Send +?Sized> Clone for Cura<T> {
         self.data().count.fetch_add(1, Relaxed);
         Cura {
             ptr: self.ptr,
-            phantom:PhantomData,
+            _phantom:PhantomData,
             //dummy:0,
             }
     }
@@ -620,6 +622,7 @@ impl<T: Sync + Send + ?Sized> Deref for ReadGuard<'_,T> {
         }
     }
 }
+
 ///
 /// util to get current time in millis for testing
 ///
@@ -751,6 +754,7 @@ mod tests {
     fn sized()
     {
         use std::sync::Arc;
+        use std::sync::RwLock;
         fn test<T>(t:T)
         {
             println!("got t");
@@ -770,6 +774,8 @@ mod tests {
         }
         struct FF;
         impl Foo for FF{}
+        struct GG;
+        impl Foo for GG{}
 
         let t:Cura<dyn Foo>=Cura::from_box(Box::new(FF{}));
         test(t);
@@ -783,6 +789,26 @@ mod tests {
         let _ = std::mem::size_of::<Arc<Arc<dyn Foo>>>();
         let _ = std::mem::size_of::<Cura<Cura<dyn Foo>>>();
         let _ = std::mem::size_of::<Bar<Cura<dyn Foo>>>();
+
+        let t=Arc::new(FF{});
+        let tt:Arc<dyn Foo>=t.clone();
+        let t:Arc<RwLock<FF>>=Arc::new(RwLock::new(FF{}));
+        let tt:Arc<RwLock<dyn Foo>>=t.clone();
+        //(*tt.write().unwrap())=GG{} as dyn Foo; //ah. this is prevented
+
+        let t=Cura::new(Box::new(FF{}));
+        //let tt:Cura<Box<dyn Foo>>=t.clone(); //??!?! why not covariant?
+
+
+        let t=Cura::from_box(Box::new(FF{}));
+        //let tt:Cura<dyn Foo>=t.clone(); //??!?! why not covariant?
+            //i guess it is correct since i might change the implementation behind it to a 
+            //not-FF-but-dyn Foo
+            //so it would be ok to be covariant if you cannot writelock this
+            //to change the object itself.
+            //but what about Arc<RwLock? well i guess i cannot cahnge the
+            //object itself? can i ?
+            //should also work for cura since i dont think its possible
     }
     #[test]
     fn alter_works()
