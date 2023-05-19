@@ -1,4 +1,7 @@
 #![warn(missing_docs)]
+//#![feature(unsize)]
+//#![feature(coerce_unsized)]
+
 //! An attempt at creating an Arc-RwLock combination that is straightforward
 //! to use and no hassle , instead of worrying about being fast and lean. 
 //!
@@ -92,11 +95,11 @@ pub struct Cura<T: Sync + Send +?Sized> {
     //dummy:i32,
 }
 struct CuraData<T: Sync + Send+?Sized> {
-    data: *const Box<T>, //pointer to Box<T>
     queuedata:UnsafeCell<QueueData>,
     count: AtomicUsize,
     lockcount:AtomicI32, //-999=writeĺock,0=free,>0 readlock count
     queuecount:AtomicU32, // number of threads,
+    data: *const Box<T>, //pointer to Box<T>
     //_phantom:PhantomData<T>,
 }
 struct QueueData
@@ -455,7 +458,7 @@ impl<T:  Sync + Send + ?Sized> Cura<T> {
         self.data().queuecount.load(Acquire)
     }
     ///
-    /// assumes queue is already locked by us 
+    /// assumes queue is already locked by us
     ///
     fn wakenext(&self)
     {
@@ -526,16 +529,15 @@ unsafe impl<T:  Send + Sync + ?Sized> Sync for Cura<T> {}
  *  deref to make use simpler, this should also transparently
  *  read-lock
  */
-//TBD  feed this to chatgpt
 /*
-impl<T:Sync+Send> Deref for Cura<T>
+impl<T:Sync+Send+?Sized> Deref for Cura<T>
 {
     type Target = ReadGuard<T>;
     //TBD this should probably return a reference to readguard?
     fn deref(&self) -> &Self::Target {
-        todo!("this deref should actually do a 'read()' ");
+        //todo!("this deref should actually do a 'read()' ");
         //&self.data().data
-        &self.read()
+        self.read()
     }
 }*/
 /**
@@ -631,7 +633,43 @@ impl<T: Sync + Send + ?Sized> Deref for ReadGuard<'_,T> {
         }
     }
 }
-
+impl<T:Sync+Send+?Sized> AsRef<T> for ReadGuard<'_,T>{
+    fn as_ref(&self) -> &T{
+        &*self
+    }
+}
+/*
+    //this needs to readlock before doing this, so we need to do this
+    //for readlock first
+impl<T:Send+Sync+ ?Sized> AsRef<T> for Cura<T> {
+    fn as_ref(&self) -> &T {
+        &**self
+    }
+}*/
+/*
+use std::ops::CoerceUnsized;
+use std::marker::Unsize;
+impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Cura<U>> for Cura<T> {}
+impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<CuraData<U>> for CuraData<T> {}
+*/
+/*use std::any::Any;
+impl Cura<dyn Any + Send + Sync> {
+    pub fn downcast<T>(self) -> Result<Cura<T>,Self>
+    where T:Any+Send+Sync
+    {
+        if(*self.read()).is::<T>() {
+            unsafe{
+                let ptr=self.ptr.cast::<CuraData<T>>();
+                core::mem::forget(self);
+                Ok(Cura{
+                    ptr:ptr,
+                })
+            }
+        }else{
+            Err(self)
+        }
+    }
+}*/
 
 
 #[cfg(test)]
@@ -819,6 +857,9 @@ mod tests {
             //but what about Arc<RwLock? well i guess i cannot cahnge the
             //object itself? can i ?
             //should also work for cura since i dont think its possible
+        //downcast
+        let t:Cura<Box<dyn Foo>>=Cura::new(Box::new(FF{}));
+        //let tt:Cura<Box<FF>>=t.clone().downcast::<FF>().unwrap();
     }
     #[test]
     fn alter_works()
