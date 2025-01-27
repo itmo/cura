@@ -1,2 +1,3 @@
 * mechanism where you can lock multiple Curae in a deterministic order 
   and then call a lambda with the result? 
+rustc 1.69.0 
