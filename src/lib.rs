@@ -77,6 +77,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release,SeqCst};
 use std::cell::UnsafeCell;
 use std::thread::Thread;
 use std::marker::PhantomData;
+use std::any::Any;
 const LOCKED:i32=-999;
 const FREE:i32=0;
 const LOCKQUEUE:u32=u32::MAX/2;
@@ -639,6 +640,43 @@ impl<T:Sync+Send+?Sized> AsRef<T> for ReadGuard<'_,T>{
     }
 }
 /*
+impl<T> ReadGuard<'static,T>
+where T: Sync + Send + ?Sized + Any,
+{
+    ///
+    /// attempt a cast to U , return None if cant,
+    /// and Some(U) if can
+    ///
+    fn try_cast<U:'static>(&self) -> Option<&U>
+    {
+        if let Some(u)=(self as &dyn Any).downcast_ref::<U>()
+        {
+            Some(u)
+        }else{
+            None
+        }
+    }
+}
+*/
+/*
+impl<'guard,T:Sync+Send+?Sized+Any> ReadGuard<'guard,T>
+{
+    ///
+    /// attempt a cast to U , return None if cant,
+    /// and Some(U) if can
+    ///
+    fn try_cast<U:'guard>(&'guard self) -> Option<&'guard U>
+    {
+        if let Some(u)=(self as &'guard dyn Any).downcast_ref::<U>()
+        {
+            Some(u)
+        }else{
+            None
+        }
+    }
+}*/
+
+/*
     //this needs to readlock before doing this, so we need to do this
     //for readlock first
 impl<T:Send+Sync+ ?Sized> AsRef<T> for Cura<T> {
@@ -915,7 +953,7 @@ mod tests {
             Bing,
             Bong,
         }
-        trait Foo:Send+Sync
+        trait Foo:Send+Sync+Any
         {
             fn get(&self)->EE
             {
