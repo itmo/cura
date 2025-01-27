@@ -2,6 +2,7 @@
 name = "cura"
 version = "0.8.0"
 edition = "2021"
+rust-version = "1.69.0"
 repository = "https://github.com/itmo/cura"
 description = "arc-lock-system that should clean up the code a lot"
 license = "MIT"
