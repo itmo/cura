@@ -71,3 +71,6 @@ let b=foo.clone();
 assert_eq!((*a.read()).get(),3);
 
 ```
+
+## fixing this would improve usability 
+https://github.com/rust-lang/rust/issues/18598
