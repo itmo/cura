@@ -74,3 +74,6 @@ assert_eq!((*a.read()).get(),3);
 
 ## fixing this would improve usability 
 https://github.com/rust-lang/rust/issues/18598
+https://github.com/rust-lang/rfcs/blob/master/text/3324-dyn-upcasting.md
+https://github.com/rust-lang/dyn-upcasting-coercion-initiative
+https://github.com/rust-lang/rfcs/blob/master/text/0982-dst-coercion.md
