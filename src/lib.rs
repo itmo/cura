@@ -515,6 +515,12 @@ impl<T:  Sync + Send + ?Sized> Cura<T> {
     }
 }
 
+impl<T: Sync + Send + ?Sized + std::fmt::Debug> std::fmt::Debug for Cura<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.read(), f)
+    }
+}
+
 /**
  *  implement send and sync since thats all we want
  */
