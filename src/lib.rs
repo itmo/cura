@@ -525,6 +525,12 @@ impl<T: Sync + Send + ?Sized + std::fmt::Display> std::fmt::Display for Cura<T> 
         std::fmt::Display::fmt(&*self.read(), f)
     }
 }
+impl<T: Sync + Send + ?Sized + PartialEq> PartialEq for Cura<T> {
+    fn eq(&self, other: &Self) -> bool {
+        *self.read() == *other.read()
+    }
+}
+impl<T: Sync + Send + ?Sized + Eq> Eq for Cura<T> {}
 
 /**
  *  implement send and sync since thats all we want
@@ -872,6 +878,18 @@ mod tests {
             }
             i=i-1;
         }
+    }
+    #[test]
+    fn partial_eq_and_eq()
+    {
+        let a = Cura::new(1);
+        let b = Cura::new(1);
+        let c = Cura::new(2);
+        assert!(a == b);
+        assert!(a != c);
+        // clones share the same data
+        let d = a.clone();
+        assert!(a == d);
     }
     #[test]
     fn debug_and_display()
