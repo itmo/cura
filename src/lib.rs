@@ -531,6 +531,16 @@ impl<T: Sync + Send + ?Sized + PartialEq> PartialEq for Cura<T> {
     }
 }
 impl<T: Sync + Send + ?Sized + Eq> Eq for Cura<T> {}
+impl<T: Sync + Send + ?Sized + PartialOrd> PartialOrd for Cura<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (*self.read()).partial_cmp(&*other.read())
+    }
+}
+impl<T: Sync + Send + ?Sized + Ord> Ord for Cura<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (*self.read()).cmp(&*other.read())
+    }
+}
 
 /**
  *  implement send and sync since thats all we want
@@ -878,6 +888,20 @@ mod tests {
             }
             i=i-1;
         }
+    }
+    #[test]
+    fn partial_ord_and_ord()
+    {
+        let a = Cura::new(1);
+        let b = Cura::new(2);
+        let c = Cura::new(1);
+        assert!(a < b);
+        assert!(b > a);
+        assert!(a <= c);
+        assert!(a >= c);
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Less);
+        assert_eq!(b.cmp(&a), std::cmp::Ordering::Greater);
+        assert_eq!(a.cmp(&c), std::cmp::Ordering::Equal);
     }
     #[test]
     fn partial_eq_and_eq()
