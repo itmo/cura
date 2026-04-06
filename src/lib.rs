@@ -520,6 +520,11 @@ impl<T: Sync + Send + ?Sized + std::fmt::Debug> std::fmt::Debug for Cura<T> {
         std::fmt::Debug::fmt(&*self.read(), f)
     }
 }
+impl<T: Sync + Send + ?Sized + std::fmt::Display> std::fmt::Display for Cura<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.read(), f)
+    }
+}
 
 /**
  *  implement send and sync since thats all we want
@@ -867,6 +872,20 @@ mod tests {
             }
             i=i-1;
         }
+    }
+    #[test]
+    fn debug_and_display()
+    {
+        #[derive(Debug)]
+        struct Foo(i32);
+        impl std::fmt::Display for Foo {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "Foo({})", self.0)
+            }
+        }
+        let c = Cura::new(Foo(42));
+        assert_eq!(format!("{:?}", c), "Foo(42)");
+        assert_eq!(format!("{}", c), "Foo(42)");
     }
     #[test]
     fn it_works() {
