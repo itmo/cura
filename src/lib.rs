@@ -1,6 +1,6 @@
 #![warn(missing_docs)]
 //! An attempt at creating an Arc-RwLock combination that is straightforward
-//! to use and no hassle , instead of worrying about being fast and lean. 
+//! to use and no hassle , instead of worrying about being fast and lean.
 //!
 //! * cloning referefences works like Arc
 //! * made for sharing objects between threads without worry
@@ -61,7 +61,7 @@
 //!     assert_eq!(v.get(),2)
 //! }//lock dropped here
 //! {
-//!     (*b.write()).set(3); //lock dropped here i think 
+//!     (*b.write()).set(3); //lock dropped here i think
 //! }
 //!
 //! assert_eq!((*a.read()).get(),3);
@@ -167,7 +167,7 @@ impl QueueLink
 ///
 impl <T: Sync + Send> Cura<T> {
     ///
-    /// constructor for a Cura 
+    /// constructor for a Cura
     /// ```
     ///     use cura::Cura;
     ///     let t=1;
@@ -454,7 +454,7 @@ impl<T:  Sync + Send + ?Sized> Cura<T> {
         self.data().queuecount.load(Acquire)
     }
     ///
-    /// assumes queue is already locked by us 
+    /// assumes queue is already locked by us
     ///
     fn wakenext(&self)
     {
@@ -525,6 +525,10 @@ impl<T: Sync + Send + ?Sized + std::fmt::Display> std::fmt::Display for Cura<T> 
         std::fmt::Display::fmt(&*self.read(), f)
     }
 }
+/**
+ * implement equality and ordering. if you mutate this value, you will get weird
+ * behavior , but it is what it is.
+ */
 impl<T: Sync + Send + ?Sized + PartialEq> PartialEq for Cura<T> {
     fn eq(&self, other: &Self) -> bool {
         *self.read() == *other.read()
@@ -539,6 +543,18 @@ impl<T: Sync + Send + ?Sized + PartialOrd> PartialOrd for Cura<T> {
 impl<T: Sync + Send + ?Sized + Ord> Ord for Cura<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (*self.read()).cmp(&*other.read())
+    }
+}
+/**
+ *  hash by read-locking and hashing the value, this is not super efficient but
+ *  it ensures consistency while hashing
+ *
+ *  naturally , if you use this as a hash key and mutate the value while it is in the hash,
+ *  you will get weird behavior
+ */
+impl<T: Sync + Send + ?Sized + std::hash::Hash> std::hash::Hash for Cura<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (*self.read()).hash(state);
     }
 }
 
@@ -888,6 +904,18 @@ mod tests {
             }
             i=i-1;
         }
+    }
+    #[test]
+    fn hash()
+    {
+        use std::collections::HashMap;
+        let a = Cura::new(1);
+        let b = Cura::new(2);
+        let mut map = HashMap::new();
+        map.insert(a.clone(), "one");
+        map.insert(b.clone(), "two");
+        assert_eq!(map[&a], "one");
+        assert_eq!(map[&b], "two");
     }
     #[test]
     fn partial_ord_and_ord()
